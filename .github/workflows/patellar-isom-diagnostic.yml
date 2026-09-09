@@ -6,9 +6,14 @@ on:
       - chatgpt-patellar-isom-build
   workflow_dispatch:
 
+concurrency:
+  group: patellar-isom-terrain-build
+  cancel-in-progress: true
+
 jobs:
   build-map:
     runs-on: windows-2022
+    timeout-minutes: 12
     steps:
       - uses: actions/checkout@v4
 
@@ -20,13 +25,7 @@ jobs:
       - name: Install generator source
         shell: pwsh
         run: |
-          $main = "$env:RUNNER_TEMP\IsomTerrain\IsomTerrain\Main.cpp"
-          Copy-Item "tools\patellar_isom_generator.cpp" $main -Force
-          $src = Get-Content $main -Raw
-          $src = $src.Replace('for ( size_t y=0; y<map.getIsomHeight(); ++y )','for ( size_t y=0; y<map.getIsomHeight(); y+=2 )')
-          $src = $src.Replace('for ( size_t ix=0; ix<map.getIsomWidth(); ++ix )','for ( size_t ix=0; ix<map.getIsomWidth(); ix+=2 )')
-          $src = $src.Replace('map.placeIsomTerrain(d, terrainType, brush, cache)','map.placeIsomTerrain(d, terrainType, std::max<size_t>(brush, 3), cache)')
-          Set-Content $main $src
+          Copy-Item "tools\patellar_isom_generator.cpp" "$env:RUNNER_TEMP\IsomTerrain\IsomTerrain\Main.cpp" -Force
           Get-ChildItem "$env:RUNNER_TEMP\IsomTerrain" -Filter *.vcxproj -Recurse | ForEach-Object {
             $xml = Get-Content $_.FullName -Raw
             $xml = $xml.Replace('v142','v143')
@@ -45,7 +44,8 @@ jobs:
           call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvars64.bat"
           msbuild "%RUNNER_TEMP%\IsomTerrain\IsomTerrain.sln" /m /p:Configuration=ReleaseUS /p:Platform=x64 /p:WindowsTargetPlatformVersion=10.0
 
-      - name: Generate terrain-only SCX
+      - name: Generate and reopen terrain-only SCX
+        timeout-minutes: 3
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path "build-output" | Out-Null
