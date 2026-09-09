@@ -172,18 +172,29 @@ int main(int argc, char ** argv)
     for ( const auto & op : cutOps )
         if ( !applyBrush(scMap, cache, op) ) return 12;
 
+    std::cout << "POST copyFromScMap BEGIN" << std::endl;
     copyFromScMap(*mapFile, scMap);
+    std::cout << "POST copyFromScMap DONE" << std::endl;
+
+    std::cout << "POST metadata BEGIN" << std::endl;
     mapFile->setScenarioName(RawString("Patellar Luxation v0.9 ISOM Terrain"));
     mapFile->setScenarioDescription(RawString("ISOM-generated Jungle terrain prototype; terrain only, no resources yet."));
+    std::cout << "POST metadata DONE" << std::endl;
 
-    if ( !mapFile->save(argv[2], true) )
+    std::cout << "SAVE BEGIN" << std::endl;
+    // No custom MPQ assets exist in this terrain-only prototype, so there is no
+    // reason to update a listfile while packaging the SCX.
+    if ( !mapFile->save(argv[2], true, false, false, true) )
     {
         std::cerr << "Failed to save map" << std::endl;
         return 4;
     }
+    std::cout << "SAVE DONE" << std::endl;
 
     // Re-open the exact MPQ/CHK that was written. This catches malformed SCX output.
+    std::cout << "REOPEN BEGIN" << std::endl;
     MapFile verify(argv[2]);
+    std::cout << "REOPEN DONE" << std::endl;
     if ( verify.empty() || verify.getTileWidth() != 128 || verify.getTileHeight() != 128 || verify.getTileset() != TS )
     {
         std::cerr << "Verification reopen failed" << std::endl;
