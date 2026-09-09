@@ -20,7 +20,13 @@ jobs:
       - name: Install generator source
         shell: pwsh
         run: |
-          Copy-Item "tools\patellar_isom_generator.cpp" "$env:RUNNER_TEMP\IsomTerrain\IsomTerrain\Main.cpp" -Force
+          $main = "$env:RUNNER_TEMP\IsomTerrain\IsomTerrain\Main.cpp"
+          Copy-Item "tools\patellar_isom_generator.cpp" $main -Force
+          $src = Get-Content $main -Raw
+          $src = $src.Replace('for ( size_t y=0; y<map.getIsomHeight(); ++y )','for ( size_t y=0; y<map.getIsomHeight(); y+=2 )')
+          $src = $src.Replace('for ( size_t ix=0; ix<map.getIsomWidth(); ++ix )','for ( size_t ix=0; ix<map.getIsomWidth(); ix+=2 )')
+          $src = $src.Replace('map.placeIsomTerrain(d, terrainType, brush, cache)','map.placeIsomTerrain(d, terrainType, std::max<size_t>(brush, 3), cache)')
+          Set-Content $main $src
           Get-ChildItem "$env:RUNNER_TEMP\IsomTerrain" -Filter *.vcxproj -Recurse | ForEach-Object {
             $xml = Get-Content $_.FullName -Raw
             $xml = $xml.Replace('v142','v143')
