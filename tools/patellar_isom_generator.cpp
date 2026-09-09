@@ -1,29 +1,13 @@
-#include "../CrossCutLib/Logger.h"
+#include "IsomApi.h"
 #include "../MappingCoreLib/MappingCore.h"
 #include <algorithm>
-#include <chrono>
 #include <cstdint>
 #include <cstring>
-#include <deque>
 #include <fstream>
 #include <iostream>
 #include <memory>
-#include <optional>
 #include <string>
-#include <string_view>
-#include <unordered_map>
 #include <vector>
-
-// IsomTerrain's low-level batch-edit helpers are private implementation details.
-// This generator intentionally exposes them only in this translation unit so a whole
-// polygon can be written first and repaired with ONE radial ISOM pass, instead of
-// running the expensive radial search once per diamond.
-#define private public
-#include "IsomApi.h"
-#undef private
-
-struct Pt { double x; double y; };
-using Poly = std::vector<Pt>;
 
 static ScMap copyToScMap(const MapFile & src)
 {
@@ -64,119 +48,54 @@ static bool loadCv5(const std::string & path, Sc::Terrain_::Tiles & out)
     const auto * raw = reinterpret_cast<const Sc::Isom::TileGroup*>(bytes.data());
     out.tileGroups.assign(raw, raw + groups);
     out.loadIsom(size_t(Sc::Terrain::Tileset::Jungle));
-    std::cout << "Loaded Jungle CV5 groups: " << groups << "\n";
+    std::cout << "Loaded Jungle CV5 groups: " << groups << std::endl;
     return true;
 }
 
-static bool inside(const Poly & poly, double x, double y)
+struct BrushOp
 {
-    bool c = false;
-    for ( size_t i=0, j=poly.size()-1; i<poly.size(); j=i++ )
+    size_t terrainType;
+    size_t x;
+    size_t y;
+    size_t extent;
+    const char * label;
+};
+
+static bool applyBrush(ScMap & map, Chk::IsomCache & cache, const BrushOp & op)
+{
+    if ( (op.x + op.y) % 2 != 0 )
     {
-        const auto & a = poly[i];
-        const auto & b = poly[j];
-        const bool intersect = ((a.y > y) != (b.y > y)) &&
-            (x < (b.x-a.x)*(y-a.y)/(b.y-a.y + 1e-12) + a.x);
-        if ( intersect ) c = !c;
-    }
-    return c;
-}
-
-static bool insideAny(const std::vector<Poly> & polys, double x, double y)
-{
-    for ( const auto & poly : polys )
-    {
-        if ( inside(poly, x, y) ) return true;
-    }
-    return false;
-}
-
-static Poly mirrorY(const Poly & p)
-{
-    Poly r; r.reserve(p.size());
-    for ( const auto & q : p ) r.push_back({q.x, 128.0-q.y});
-    return r;
-}
-
-static Poly mirrorX(const Poly & p)
-{
-    Poly r; r.reserve(p.size());
-    for ( const auto & q : p ) r.push_back({128.0-q.x, q.y});
-    return r;
-}
-
-static Poly rect(double x1,double y1,double x2,double y2)
-{
-    return {{x1,y1},{x2,y1},{x2,y2},{x1,y2}};
-}
-
-static size_t paintPolysFast(ScMap & map, Chk::IsomCache & cache, const std::vector<Poly> & polys, size_t terrainType)
-{
-    const uint16_t isomValue = cache.getTerrainTypeIsomValue(terrainType);
-    if ( isomValue == 0 || size_t(isomValue) >= cache.isomLinks.size() )
-        return 0;
-
-    cache.resetChangedArea();
-    std::vector<Chk::IsomDiamond> painted;
-    painted.reserve(map.getIsomWidth()*map.getIsomHeight()/3);
-
-    for ( size_t y=0; y<map.getIsomHeight(); ++y )
-    {
-        for ( size_t ix=y%2; ix<map.getIsomWidth(); ix+=2 )
-        {
-            Chk::IsomDiamond d{ix,y};
-            if ( !d.isValid() ) continue;
-            const double tx = double(ix*2);
-            const double ty = double(y);
-            if ( insideAny(polys, tx, ty) )
-            {
-                map.setDiamondIsomValues(d, isomValue, false, cache);
-                painted.push_back(d);
-            }
-        }
+        std::cerr << "Invalid ISOM parity for " << op.label << std::endl;
+        return false;
     }
 
-    if ( painted.empty() ) return 0;
+    std::cout << "BEGIN " << op.label << " type=" << op.terrainType
+              << " x=" << op.x << " y=" << op.y << " extent=" << op.extent << std::endl;
 
-    // Only seed the radial repair with unmodified diamonds touching the freshly
-    // painted area. The repair then propagates outward as far as required by the
-    // legal Jungle ISOM transition graph.
-    std::deque<Chk::IsomDiamond> frontier;
-    std::vector<uint8_t> queued(map.getIsomWidth()*map.getIsomHeight(), 0);
-    for ( const auto & d : painted )
+    if ( !map.placeIsomTerrain({op.x, op.y}, op.terrainType, op.extent, cache) )
     {
-        for ( auto n : Chk::IsomDiamond::neighbors )
-        {
-            auto q = d.getNeighbor(n);
-            if ( !map.diamondNeedsUpdate(q) ) continue;
-            const size_t idx = q.y*map.getIsomWidth() + q.x;
-            if ( idx < queued.size() && queued[idx] == 0 )
-            {
-                queued[idx] = 1;
-                frontier.push_back(q);
-            }
-        }
+        std::cerr << "placeIsomTerrain failed for " << op.label << std::endl;
+        return false;
     }
 
-    map.radiallyUpdateTerrain(false, frontier, cache);
-    map.updateTilesFromIsom(cache); // also clears ISOM modified/visited editor flags
-
-    std::cout << "batch paint type " << terrainType << ": " << painted.size() << " diamonds\n";
-    return painted.size();
+    map.updateTilesFromIsom(cache);
+    cache.finalizeUndoableOperation();
+    std::cout << "DONE  " << op.label << std::endl;
+    return true;
 }
 
 int main(int argc, char ** argv)
 {
     if ( argc < 3 )
     {
-        std::cerr << "usage: IsomTerrain.exe <jungle.cv5> <output.scx>\n";
+        std::cerr << "usage: IsomTerrain.exe <jungle.cv5> <output.scx>" << std::endl;
         return 2;
     }
 
     Sc::Terrain_::Tiles jungleData;
     if ( !loadCv5(argv[1], jungleData) )
     {
-        std::cerr << "Failed to load jungle.cv5\n";
+        std::cerr << "Failed to load jungle.cv5" << std::endl;
         return 3;
     }
 
@@ -190,85 +109,100 @@ int main(int argc, char ** argv)
     ScMap scMap = copyToScMap(*mapFile);
     Chk::IsomCache cache(TS, 128, 128, jungleData);
 
-    // Initialize the whole field as legal ISOM water, create MTXM/TILE once,
-    // then clear the Modified flags before beginning the batch operations.
+    // Clean legal water canvas.
     uint16_t waterValue = ((cache.getTerrainTypeIsomValue(WATER) << 4) | Chk::IsomRect::EditorFlag::Modified);
     scMap.isomRects.assign(scMap.getIsomWidth()*scMap.getIsomHeight(), Chk::IsomRect{waterValue,waterValue,waterValue,waterValue});
     cache.setAllChanged();
     scMap.updateTilesFromIsom(cache);
+    std::cout << "Water canvas initialized" << std::endl;
 
-    // Mainland silhouette: symmetric knee-joint envelope.
-    Poly leftTop = {
-        {38,2},{36,6},{34,12},{32,18},{28,22},{24,28},{22,34},{22,42},
-        {26,48},{22,54},{20,58},{18,64}
+    // v0.9 terrain prototype uses a deliberately small, bounded number of real ISOM
+    // brush operations. Overlap creates the knee-joint silhouette without thousands
+    // of independent radial ISOM repairs.
+    const std::vector<BrushOp> landOps = {
+        {LOW,32,14,14,"upper shaft"},
+        {LOW,24,28,14,"upper-left condyle"},
+        {LOW,40,28,14,"upper-right condyle"},
+        {LOW,20,46,13,"left trochlear shoulder"},
+        {LOW,44,46,13,"right trochlear shoulder"},
+        {LOW,32,62,18,"joint center"},
+        {LOW,20,78,13,"left lower shoulder"},
+        {LOW,44,78,13,"right lower shoulder"},
+        {LOW,24,96,14,"lower-left condyle"},
+        {LOW,40,96,14,"lower-right condyle"},
+        {LOW,32,112,14,"lower shaft"},
+        // Sesamoid islands: low outer ring first so raised terrain has a legal base.
+        {LOW,6,62,7,"left sesamoid island"},
+        {LOW,58,62,7,"right sesamoid island"}
     };
-    Poly left = leftTop;
-    auto mirroredLeft = mirrorY(leftTop);
-    for ( auto it=mirroredLeft.rbegin()+1; it!=mirroredLeft.rend(); ++it ) left.push_back(*it);
-    Poly right = mirrorX(left);
-    Poly mainland = left;
-    for ( const auto & q : right ) mainland.push_back(q);
-    paintPolysFast(scMap, cache, {mainland}, LOW);
 
-    // True raised terrain: mains/naturals, central patella, trochlear ridges,
-    // plus two isolated raised sesamoid islands.
-    Poly topMain = {{38,2},{90,2},{94,8},{94,14},{90,20},{82,24},{72,24},{68,20},{60,20},{56,24},{46,24},{38,20},{34,14},{34,8}};
-    Poly topNat = {{52,20},{76,20},{82,24},{82,30},{78,34},{70,38},{58,38},{50,34},{46,30},{46,24}};
-    Poly patella = {{54,52},{74,52},{80,56},{82,62},{80,68},{74,74},{54,74},{48,68},{46,62},{48,56}};
-    Poly leftTroch = {{28,34},{38,34},{44,38},{46,44},{44,50},{42,56},{42,60},{46,64},{42,68},{42,72},{44,78},{46,84},{44,90},{38,94},{28,94},{24,88},{24,82},{28,74},{30,68},{30,60},{28,54},{24,46},{24,40}};
-    Poly leftIsland = {{4,50},{8,46},{16,46},{22,50},{24,56},{24,68},{22,74},{16,78},{8,76},{4,72},{2,66},{2,56}};
+    for ( const auto & op : landOps )
+        if ( !applyBrush(scMap, cache, op) ) return 10;
 
-    std::vector<Poly> highs = {
-        topMain, mirrorY(topMain), topNat, mirrorY(topNat), patella,
-        leftTroch, mirrorX(leftTroch), leftIsland, mirrorX(leftIsland)
+    const std::vector<BrushOp> highOps = {
+        // Four symmetric elevated starting plateaus.
+        {HIGH,22,18,7,"P1 high main"},
+        {HIGH,42,18,7,"P2 high main"},
+        {HIGH,22,108,7,"P3 high main"},
+        {HIGH,42,108,7,"P4 high main"},
+        // Central patella and paired trochlear ridges.
+        {HIGH,32,62,9,"patella"},
+        {HIGH,20,62,7,"left trochlear ridge"},
+        {HIGH,44,62,7,"right trochlear ridge"},
+        // Raised centers of the two sesamoid islands.
+        {HIGH,6,62,3,"left sesamoid high core"},
+        {HIGH,58,62,3,"right sesamoid high core"}
     };
-    paintPolysFast(scMap, cache, highs, HIGH);
 
-    // Symmetrical low-ground approach slots. ISOM generates legal transition/cliff
-    // shapes around them rather than directly writing cliff tile IDs.
-    std::vector<Poly> rampCuts = {
-        rect(60,18,68,27), rect(60,31,68,40),
-        rect(60,47,68,57), rect(60,70,68,81),
-        rect(60,87,68,97), rect(60,101,68,111),
-        rect(23,38,33,49), rect(23,79,33,90),
-        rect(95,38,105,49), rect(95,79,105,90)
+    for ( const auto & op : highOps )
+        if ( !applyBrush(scMap, cache, op) ) return 11;
+
+    // Low-ground notches create approach/ramp-like slots into elevated anatomy.
+    const std::vector<BrushOp> cutOps = {
+        {LOW,32,52,3,"upper patella approach"},
+        {LOW,32,72,3,"lower patella approach"},
+        {LOW,26,62,3,"left patella approach"},
+        {LOW,38,62,3,"right patella approach"},
+        {LOW,22,26,3,"P1 natural exit"},
+        {LOW,42,26,3,"P2 natural exit"},
+        {LOW,22,100,3,"P3 natural exit"},
+        {LOW,42,100,3,"P4 natural exit"}
     };
-    paintPolysFast(scMap, cache, rampCuts, LOW);
 
-    // Final deterministic MTXM/TILE rebuild from the completed ISOM field.
-    cache.setAllChanged();
-    for ( auto & r : scMap.isomRects )
-    {
-        r.left |= Chk::IsomRect::EditorFlag::Modified;
-        r.right |= Chk::IsomRect::EditorFlag::Modified;
-    }
-    scMap.updateTilesFromIsom(cache);
+    for ( const auto & op : cutOps )
+        if ( !applyBrush(scMap, cache, op) ) return 12;
+
     copyFromScMap(*mapFile, scMap);
-
     mapFile->setScenarioName(RawString("Patellar Luxation v0.9 ISOM Terrain"));
-    mapFile->setScenarioDescription(RawString("ISOM-generated Jungle terrain test. Terrain only."));
+    mapFile->setScenarioDescription(RawString("ISOM-generated Jungle terrain prototype; terrain only, no resources yet."));
 
     if ( !mapFile->save(argv[2], true) )
     {
-        std::cerr << "Failed to save map\n";
+        std::cerr << "Failed to save map" << std::endl;
         return 4;
     }
 
-    // Re-open what was actually written to disk so a corrupt MPQ/CHK never gets uploaded.
+    // Re-open the exact MPQ/CHK that was written. This catches malformed SCX output.
     MapFile verify(argv[2]);
     if ( verify.empty() || verify.getTileWidth() != 128 || verify.getTileHeight() != 128 || verify.getTileset() != TS )
     {
-        std::cerr << "Verification reopen failed\n";
+        std::cerr << "Verification reopen failed" << std::endl;
         return 5;
     }
-    if ( verify.tiles.size() != 128u*128u || verify.editorTiles.size() != 128u*128u || verify.isomRects.size() != (128u/2u+1u)*(128u+1u) )
+
+    const size_t expectedTiles = 128u*128u;
+    const size_t expectedIsom = (128u/2u+1u)*(128u+1u);
+    if ( verify.tiles.size() != expectedTiles || verify.editorTiles.size() != expectedTiles || verify.isomRects.size() != expectedIsom )
     {
-        std::cerr << "Verification section sizes are invalid\n";
+        std::cerr << "Verification section sizes are invalid" << std::endl;
         return 6;
     }
 
     size_t zeroTiles = std::count(verify.tiles.begin(), verify.tiles.end(), uint16_t(0));
-    std::cout << "Saved and reopened: " << argv[2] << "\n";
-    std::cout << "ISOM=" << verify.isomRects.size() << " TILE=" << verify.editorTiles.size() << " MTXM=" << verify.tiles.size() << " zeroMTXM=" << zeroTiles << "\n";
+    std::cout << "Saved and reopened: " << argv[2] << std::endl;
+    std::cout << "ISOM=" << verify.isomRects.size()
+              << " TILE=" << verify.editorTiles.size()
+              << " MTXM=" << verify.tiles.size()
+              << " zeroMTXM=" << zeroTiles << std::endl;
     return 0;
 }
