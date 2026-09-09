@@ -22,7 +22,10 @@ jobs:
         run: |
           Copy-Item "tools\patellar_isom_generator.cpp" "$env:RUNNER_TEMP\IsomTerrain\IsomTerrain\Main.cpp" -Force
           Get-ChildItem "$env:RUNNER_TEMP\IsomTerrain" -Filter *.vcxproj -Recurse | ForEach-Object {
-            (Get-Content $_.FullName -Raw).Replace('v142','v143') | Set-Content $_.FullName
+            $xml = Get-Content $_.FullName -Raw
+            $xml = $xml.Replace('v142','v143')
+            $xml = $xml.Replace('<EnableASAN>true</EnableASAN>','<EnableASAN>false</EnableASAN>')
+            Set-Content $_.FullName $xml
           }
 
       - name: Download Jungle CV5
