@@ -1,0 +1,75 @@
+name: Patellar Exact Terrain v1.1
+
+on:
+  push:
+    branches:
+      - chatgpt-patellar-isom-build
+    paths:
+      - tools/patellar_exact_terrain_v11.cpp
+      - .github/workflows/patellar-exact-terrain-v11.yml
+  workflow_dispatch:
+
+concurrency:
+  group: patellar-exact-terrain-v11
+  cancel-in-progress: true
+
+jobs:
+  build-map:
+    runs-on: windows-2022
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Clone IsomTerrain
+        shell: pwsh
+        run: |
+          git clone --depth 1 https://github.com/TheNitesWhoSay/IsomTerrain.git "$env:RUNNER_TEMP\IsomTerrain"
+
+      - name: Install exact-reference generator and CI save fix
+        shell: pwsh
+        run: |
+          Copy-Item "tools\patellar_exact_terrain_v11.cpp" "$env:RUNNER_TEMP\IsomTerrain\IsomTerrain\Main.cpp" -Force
+
+          $mapFileCpp = "$env:RUNNER_TEMP\IsomTerrain\MappingCoreLib\MapFile.cpp"
+          $src = Get-Content $mapFileCpp -Raw
+          $needle = "bool MapFile::processModifiedAssets(bool updateListFile)`r`n{"
+          if (!$src.Contains($needle)) { $needle = "bool MapFile::processModifiedAssets(bool updateListFile)`n{" }
+          if (!$src.Contains($needle)) { throw "Could not locate processModifiedAssets" }
+          $replacement = $needle + "`r`n    if ( modifiedAssets.empty() )`r`n        return true;"
+          $src = $src.Replace($needle, $replacement)
+          Set-Content $mapFileCpp $src
+
+          Get-ChildItem "$env:RUNNER_TEMP\IsomTerrain" -Filter *.vcxproj -Recurse | ForEach-Object {
+            $xml = Get-Content $_.FullName -Raw
+            $xml = $xml.Replace('v142','v143')
+            $xml = $xml.Replace('<EnableASAN>true</EnableASAN>','<EnableASAN>false</EnableASAN>')
+            Set-Content $_.FullName $xml
+          }
+
+      - name: Download Jungle CV5
+        shell: pwsh
+        run: |
+          Invoke-WebRequest -Uri "https://raw.githubusercontent.com/MaksymAlokhin/StarCraftMapBrowser/master/Tileset/jungle.cv5" -OutFile "$env:RUNNER_TEMP\jungle.cv5"
+
+      - name: Build generator
+        shell: cmd
+        run: |
+          call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvars64.bat"
+          msbuild "%RUNNER_TEMP%\IsomTerrain\IsomTerrain.sln" /m /p:Configuration=ReleaseUS /p:Platform=x64 /p:WindowsTargetPlatformVersion=10.0
+
+      - name: Generate terrain-only SCX
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path "build-output" | Out-Null
+          $exe = "$env:RUNNER_TEMP\IsomTerrain\x64\ReleaseUS\IsomTerrain.exe"
+          $output = "build-output\Patellar_Luxation_v11_Exact_Terrain_Test.scx"
+          & $exe "$env:RUNNER_TEMP\jungle.cv5" $output
+          if ($LASTEXITCODE -ne 0) { throw "Generator failed with exit code $LASTEXITCODE" }
+          Get-Item $output | Format-List Name,Length,FullName
+
+      - name: Upload terrain-only map
+        uses: actions/upload-artifact@v4
+        with:
+          name: Patellar-Luxation-v11-Exact-Terrain-Test
+          path: build-output/Patellar_Luxation_v11_Exact_Terrain_Test.scx
+          if-no-files-found: error
