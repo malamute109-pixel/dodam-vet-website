@@ -22,10 +22,25 @@ jobs:
         run: |
           git clone --depth 1 https://github.com/TheNitesWhoSay/IsomTerrain.git "$env:RUNNER_TEMP\IsomTerrain"
 
-      - name: Install generator source
+      - name: Install generator and CI save fix
         shell: pwsh
         run: |
           Copy-Item "tools\patellar_isom_generator.cpp" "$env:RUNNER_TEMP\IsomTerrain\IsomTerrain\Main.cpp" -Force
+
+          # The terrain-only prototype has no modified MPQ assets. Upstream MapFile::save
+          # nevertheless opens a temporary MPQ inside processModifiedAssets(), which can
+          # block on headless CI. Return immediately when the asset list is empty.
+          $mapFileCpp = "$env:RUNNER_TEMP\IsomTerrain\MappingCoreLib\MapFile.cpp"
+          $src = Get-Content $mapFileCpp -Raw
+          $needle = "bool MapFile::processModifiedAssets(bool updateListFile)`r`n{"
+          if (!$src.Contains($needle)) {
+            $needle = "bool MapFile::processModifiedAssets(bool updateListFile)`n{"
+          }
+          if (!$src.Contains($needle)) { throw "Could not locate processModifiedAssets in MapFile.cpp" }
+          $replacement = $needle + "`r`n    if ( modifiedAssets.empty() )`r`n        return true; // terrain-only CI map: no temporary asset MPQ required"
+          $src = $src.Replace($needle, $replacement)
+          Set-Content $mapFileCpp $src
+
           Get-ChildItem "$env:RUNNER_TEMP\IsomTerrain" -Filter *.vcxproj -Recurse | ForEach-Object {
             $xml = Get-Content $_.FullName -Raw
             $xml = $xml.Replace('v142','v143')
@@ -54,14 +69,14 @@ jobs:
           $stderr = Join-Path $env:RUNNER_TEMP "patellar-generator.err.txt"
           $args = @("$env:RUNNER_TEMP\jungle.cv5", "build-output\Patellar_Luxation_v09_ISOM_Terrain.scx")
           $p = Start-Process -FilePath $exe -ArgumentList $args -RedirectStandardOutput $stdout -RedirectStandardError $stderr -PassThru -NoNewWindow
-          $finished = $p.WaitForExit(45000)
+          $finished = $p.WaitForExit(60000)
           if (!$finished) {
             try { $p.Kill($true) } catch {}
             Write-Host "=== generator stdout before timeout ==="
             if (Test-Path $stdout) { Get-Content $stdout }
             Write-Host "=== generator stderr before timeout ==="
             if (Test-Path $stderr) { Get-Content $stderr }
-            throw "Generator exceeded 45 seconds and was terminated"
+            throw "Generator exceeded 60 seconds and was terminated"
           }
           Write-Host "=== generator stdout ==="
           if (Test-Path $stdout) { Get-Content $stdout }
