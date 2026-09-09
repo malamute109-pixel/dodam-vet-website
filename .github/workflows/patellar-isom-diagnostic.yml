@@ -1,4 +1,4 @@
-name: Patellar ISOM Terrain Build
+name: Patellar 1v1 Playtest Build
 
 on:
   push:
@@ -27,9 +27,9 @@ jobs:
         run: |
           Copy-Item "tools\patellar_isom_generator.cpp" "$env:RUNNER_TEMP\IsomTerrain\IsomTerrain\Main.cpp" -Force
 
-          # The terrain-only prototype has no modified MPQ assets. Upstream MapFile::save
-          # nevertheless opens a temporary MPQ inside processModifiedAssets(), which can
-          # block on headless CI. Return immediately when the asset list is empty.
+          # This generated melee map has no custom MPQ assets. Upstream MapFile::save
+          # still opens a temporary MPQ inside processModifiedAssets(), which can block
+          # on headless CI. Return immediately when the asset list is empty.
           $mapFileCpp = "$env:RUNNER_TEMP\IsomTerrain\MappingCoreLib\MapFile.cpp"
           $src = Get-Content $mapFileCpp -Raw
           $needle = "bool MapFile::processModifiedAssets(bool updateListFile)`r`n{"
@@ -37,7 +37,7 @@ jobs:
             $needle = "bool MapFile::processModifiedAssets(bool updateListFile)`n{"
           }
           if (!$src.Contains($needle)) { throw "Could not locate processModifiedAssets in MapFile.cpp" }
-          $replacement = $needle + "`r`n    if ( modifiedAssets.empty() )`r`n        return true; // terrain-only CI map: no temporary asset MPQ required"
+          $replacement = $needle + "`r`n    if ( modifiedAssets.empty() )`r`n        return true; // generated map: no temporary asset MPQ required"
           $src = $src.Replace($needle, $replacement)
           Set-Content $mapFileCpp $src
 
@@ -59,7 +59,7 @@ jobs:
           call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvars64.bat"
           msbuild "%RUNNER_TEMP%\IsomTerrain\IsomTerrain.sln" /m /p:Configuration=ReleaseUS /p:Platform=x64 /p:WindowsTargetPlatformVersion=10.0
 
-      - name: Generate and reopen terrain-only SCX
+      - name: Generate and validate 1v1 SCX
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path "build-output" | Out-Null
@@ -67,7 +67,8 @@ jobs:
           if (!(Test-Path $exe)) { throw "Generator executable not found: $exe" }
           $stdout = Join-Path $env:RUNNER_TEMP "patellar-generator.out.txt"
           $stderr = Join-Path $env:RUNNER_TEMP "patellar-generator.err.txt"
-          $args = @("$env:RUNNER_TEMP\jungle.cv5", "build-output\Patellar_Luxation_v09_ISOM_Terrain.scx")
+          $output = "build-output\Patellar_Luxation_v10_1v1_Playtest.scx"
+          $args = @("$env:RUNNER_TEMP\jungle.cv5", $output)
           $p = Start-Process -FilePath $exe -ArgumentList $args -RedirectStandardOutput $stdout -RedirectStandardError $stderr -PassThru -NoNewWindow
           $finished = $p.WaitForExit(60000)
           if (!$finished) {
@@ -83,11 +84,11 @@ jobs:
           Write-Host "=== generator stderr ==="
           if (Test-Path $stderr) { Get-Content $stderr }
           if ($p.ExitCode -ne 0) { throw "Generator failed with exit code $($p.ExitCode)" }
-          Get-Item "build-output\Patellar_Luxation_v09_ISOM_Terrain.scx" | Format-List Name,Length,FullName
+          Get-Item $output | Format-List Name,Length,FullName
 
       - name: Upload map artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Patellar-Luxation-v09-ISOM-Terrain
-          path: build-output/Patellar_Luxation_v09_ISOM_Terrain.scx
+          name: Patellar-Luxation-v10-1v1-Playtest
+          path: build-output/Patellar_Luxation_v10_1v1_Playtest.scx
           if-no-files-found: error
