@@ -1,6 +1,5 @@
 #include "IsomApi.h"
 #include "../MappingCoreLib/MappingCore.h"
-#include <algorithm>
 #include <cstdint>
 #include <cstring>
 #include <fstream>
@@ -85,33 +84,17 @@ static void configure1v1(MapFile & mapFile)
     mapFile.playerRaces[11] = Chk::Race::Neutral;
 }
 
-struct TerrainCounts {
-    size_t water = 0;
-    size_t jungle = 0;
-    size_t other = 0;
-};
-
-static TerrainCounts countTerrain(const std::vector<u16> & tiles, const Sc::Terrain_::Tiles & jungleData)
+static size_t countJungle(const std::vector<u16> & tiles, const Sc::Terrain_::Tiles & jungleData)
 {
-    TerrainCounts c {};
+    size_t count = 0;
     for ( u16 tile : tiles )
     {
         const size_t group = size_t(Sc::Terrain::getTileGroup(tile));
-        if ( group >= jungleData.tileGroups.size() ) {
-            ++c.other;
-            continue;
-        }
-        const auto tt = size_t(jungleData.tileGroups[group].terrainType);
-        if ( tt == Sc::Isom::Brush::Jungle::Water ) ++c.water;
-        else if ( tt == Sc::Isom::Brush::Jungle::Jungle_ ) ++c.jungle;
-        else ++c.other;
+        if ( group < jungleData.tileGroups.size() &&
+             size_t(jungleData.tileGroups[group].terrainType) == Sc::Isom::Brush::Jungle::Jungle_ )
+            ++count;
     }
-    return c;
-}
-
-static void printCounts(const char * label, const TerrainCounts & c)
-{
-    std::cout << label << ": water=" << c.water << " jungle=" << c.jungle << " other=" << c.other << std::endl;
+    return count;
 }
 
 int main(int argc, char ** argv)
@@ -122,7 +105,6 @@ int main(int argc, char ** argv)
     }
 
     constexpr auto TS = Sc::Terrain::Tileset::Jungle;
-    constexpr size_t WATER = Sc::Isom::Brush::Jungle::Water;
     constexpr size_t JUNGLE = Sc::Isom::Brush::Jungle::Jungle_;
 
     Sc::Terrain_::Tiles jungleData;
@@ -133,64 +115,36 @@ int main(int argc, char ** argv)
     ScMap scMap = copyToScMap(*mapFile);
     Chk::IsomCache cache(TS,128,128,jungleData);
 
-    // IMPORTANT sanity change from v1.1: start from solid Jungle, not Water.
-    // This guarantees that a failed carve cannot silently become an all-water map.
+    // v1.2 is intentionally the simplest possible test after v1.1 rendered as water:
+    // fill EVERY tile with plain Jungle. No water, no cliffs, no ramps, no resources.
+    // If this appears as normal land in StarCraft, the base terrain pipeline is proven.
     const uint16_t jungleValue = ((cache.getTerrainTypeIsomValue(JUNGLE) << 4) | Chk::IsomRect::EditorFlag::Modified);
     scMap.isomRects.assign(scMap.getIsomWidth()*scMap.getIsomHeight(), Chk::IsomRect{jungleValue,jungleValue,jungleValue,jungleValue});
     cache.setAllChanged();
     scMap.updateTilesFromIsom(cache);
-    printCounts("BASE", countTerrain(scMap.tiles,jungleData));
 
-    // Carve a broad water frame, deliberately leaving one unmistakable central land mass.
-    // For this v1.2 sanity file there are NO high grounds, NO ramps and NO resources.
-    size_t waterStamps = 0;
-    for ( int ix=0; ix<=64; ++ix )
-    {
-        int y = 0;
-        if ( (ix+y)&1 ) ++y;
-        for ( ; y<=127; y+=2 )
-        {
-            const int tileX = ix*2;
-            const bool outside = tileX < 30 || tileX > 98 || y < 8 || y > 120;
-            if ( outside )
-            {
-                if ( !scMap.placeIsomTerrain({size_t(ix),size_t(y)}, WATER, 1, cache) ) {
-                    std::cerr << "Water carve failed at " << ix << "," << y << std::endl;
-                    return 10;
-                }
-                ++waterStamps;
-            }
-        }
-    }
-    scMap.updateTilesFromIsom(cache);
-    cache.finalizeUndoableOperation();
-    std::cout << "Water carve stamps: " << waterStamps << std::endl;
-
-    const TerrainCounts beforeSave = countTerrain(scMap.tiles,jungleData);
-    printCounts("BEFORE SAVE", beforeSave);
-    if ( beforeSave.jungle < 3000 || beforeSave.water < 2000 ) {
-        std::cerr << "Sanity terrain mix failed before save" << std::endl;
-        return 11;
-    }
+    const size_t before = countJungle(scMap.tiles,jungleData);
+    std::cout << "BEFORE SAVE jungle tiles=" << before << " / " << scMap.tiles.size() << std::endl;
+    if ( before != 128u*128u ) return 10;
 
     copyFromScMap(*mapFile,scMap);
     configure1v1(*mapFile);
     mapFile->addUnit(makeStart(64,20,0));
     mapFile->addUnit(makeStart(64,108,1));
-    mapFile->setScenarioName(RawString("Patellar Luxation v1.2 LAND SANITY"));
-    mapFile->setScenarioDescription(RawString("Land-only sanity check after the all-water v1.1 failure. Expect one large central Jungle land mass with Water around it. No resources, high ground, or ramps yet."));
+    mapFile->setScenarioName(RawString("Patellar Luxation v1.2 FLAT LAND TEST"));
+    mapFile->setScenarioDescription(RawString("Diagnostic step: the entire 128x128 map must display as ordinary Jungle ground. No water, resources, high ground, or ramps yet."));
 
     if ( !mapFile->save(argv[2],true,false,false,true) ) return 20;
 
     MapFile verify(argv[2]);
     if ( verify.empty() || verify.getTileWidth()!=128 || verify.getTileHeight()!=128 || verify.getTileset()!=TS ) return 21;
-    const TerrainCounts afterSave = countTerrain(verify.tiles,jungleData);
-    printCounts("AFTER REOPEN", afterSave);
+    const size_t after = countJungle(verify.tiles,jungleData);
     size_t starts=0;
     for ( size_t i=0; i<verify.numUnits(); ++i )
         if ( verify.getUnit(i).type==Sc::Unit::Type::StartLocation ) ++starts;
-    std::cout << "starts=" << starts << " units=" << verify.numUnits() << " file=" << argv[2] << std::endl;
-    if ( starts != 2 || verify.numUnits() != 2 || afterSave.jungle < 3000 || afterSave.water < 2000 ) return 22;
+    std::cout << "AFTER REOPEN jungle tiles=" << after << " / " << verify.tiles.size()
+              << " starts=" << starts << " units=" << verify.numUnits() << std::endl;
+    if ( after != 128u*128u || starts != 2 || verify.numUnits() != 2 ) return 22;
 
     return 0;
 }
