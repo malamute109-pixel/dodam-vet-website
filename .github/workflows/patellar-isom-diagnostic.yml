@@ -1,4 +1,4 @@
-name: Patellar ISOM Diagnostic
+name: Patellar ISOM Terrain Build
 
 on:
   push:
@@ -7,33 +7,48 @@ on:
   workflow_dispatch:
 
 jobs:
-  diagnose:
+  build-map:
     runs-on: windows-2022
     steps:
       - uses: actions/checkout@v4
 
-      - name: Download Jungle CV5 terrain data
+      - name: Clone IsomTerrain
+        shell: pwsh
+        run: |
+          git clone --depth 1 https://github.com/TheNitesWhoSay/IsomTerrain.git "$env:RUNNER_TEMP\IsomTerrain"
+
+      - name: Install generator source
+        shell: pwsh
+        run: |
+          Copy-Item "tools\patellar_isom_generator.cpp" "$env:RUNNER_TEMP\IsomTerrain\IsomTerrain\Main.cpp" -Force
+          Get-ChildItem "$env:RUNNER_TEMP\IsomTerrain" -Filter *.vcxproj -Recurse | ForEach-Object {
+            (Get-Content $_.FullName -Raw).Replace('v142','v143') | Set-Content $_.FullName
+          }
+
+      - name: Download Jungle CV5
         shell: pwsh
         run: |
           Invoke-WebRequest -Uri "https://raw.githubusercontent.com/MaksymAlokhin/StarCraftMapBrowser/master/Tileset/jungle.cv5" -OutFile "$env:RUNNER_TEMP\jungle.cv5"
 
-      - name: Inspect Jungle terrain elevations
-        shell: python
+      - name: Build IsomTerrain generator
+        shell: cmd
         run: |
-          import os, struct, collections
-          path = os.path.join(os.environ['RUNNER_TEMP'], 'jungle.cv5')
-          data = open(path, 'rb').read()
-          GROUP_SIZE = 52
-          print('cv5 bytes:', len(data), 'groups:', len(data)//GROUP_SIZE, 'remainder:', len(data)%GROUP_SIZE)
-          summary = collections.defaultdict(lambda: {'count':0,'heights':collections.Counter(),'build':collections.Counter()})
-          for i in range(len(data)//GROUP_SIZE):
-              off=i*GROUP_SIZE
-              terrain_type, buildability, ground_height = struct.unpack_from('<HBB', data, off)
-              s=summary[terrain_type]
-              s['count'] += 1
-              s['heights'][ground_height] += 1
-              s['build'][buildability] += 1
-          names={2:'Dirt',3:'HighDirt',4:'Mud',5:'Water',8:'Jungle',9:'RaisedJungle',10:'HighJungle',11:'Ruins',12:'HighRuins',13:'HighRaisedJungle',15:'RockyGround',16:'Temple',17:'HighTemple'}
-          for t in sorted(names):
-              s=summary[t]
-              print(f"type {t:2d} {names[t]:18s} count={s['count']:4d} heights={dict(s['heights'])} buildability={dict(s['build'])}")
+          call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvars64.bat"
+          msbuild "%RUNNER_TEMP%\IsomTerrain\IsomTerrain.sln" /m /p:Configuration=ReleaseUS /p:Platform=x64 /p:WindowsTargetPlatformVersion=10.0
+
+      - name: Generate terrain-only SCX
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path "build-output" | Out-Null
+          $exe = "$env:RUNNER_TEMP\IsomTerrain\x64\ReleaseUS\IsomTerrain.exe"
+          if (!(Test-Path $exe)) { throw "Generator executable not found: $exe" }
+          & $exe "$env:RUNNER_TEMP\jungle.cv5" "build-output\Patellar_Luxation_v09_ISOM_Terrain.scx"
+          if ($LASTEXITCODE -ne 0) { throw "Generator failed with exit code $LASTEXITCODE" }
+          Get-Item "build-output\Patellar_Luxation_v09_ISOM_Terrain.scx" | Format-List Name,Length,FullName
+
+      - name: Upload map artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Patellar-Luxation-v09-ISOM-Terrain
+          path: build-output/Patellar_Luxation_v09_ISOM_Terrain.scx
+          if-no-files-found: error
