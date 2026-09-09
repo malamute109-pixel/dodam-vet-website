@@ -1,0 +1,39 @@
+name: Patellar ISOM Diagnostic
+
+on:
+  push:
+    branches:
+      - chatgpt-patellar-isom-build
+  workflow_dispatch:
+
+jobs:
+  diagnose:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download Jungle CV5 terrain data
+        shell: pwsh
+        run: |
+          Invoke-WebRequest -Uri "https://raw.githubusercontent.com/MaksymAlokhin/StarCraftMapBrowser/master/Tileset/jungle.cv5" -OutFile "$env:RUNNER_TEMP\jungle.cv5"
+
+      - name: Inspect Jungle terrain elevations
+        shell: python
+        run: |
+          import os, struct, collections
+          path = os.path.join(os.environ['RUNNER_TEMP'], 'jungle.cv5')
+          data = open(path, 'rb').read()
+          GROUP_SIZE = 52
+          print('cv5 bytes:', len(data), 'groups:', len(data)//GROUP_SIZE, 'remainder:', len(data)%GROUP_SIZE)
+          summary = collections.defaultdict(lambda: {'count':0,'heights':collections.Counter(),'build':collections.Counter()})
+          for i in range(len(data)//GROUP_SIZE):
+              off=i*GROUP_SIZE
+              terrain_type, buildability, ground_height = struct.unpack_from('<HBB', data, off)
+              s=summary[terrain_type]
+              s['count'] += 1
+              s['heights'][ground_height] += 1
+              s['build'][buildability] += 1
+          names={2:'Dirt',3:'HighDirt',4:'Mud',5:'Water',8:'Jungle',9:'RaisedJungle',10:'HighJungle',11:'Ruins',12:'HighRuins',13:'HighRaisedJungle',15:'RockyGround',16:'Temple',17:'HighTemple'}
+          for t in sorted(names):
+              s=summary[t]
+              print(f"type {t:2d} {names[t]:18s} count={s['count']:4d} heights={dict(s['heights'])} buildability={dict(s['build'])}")
