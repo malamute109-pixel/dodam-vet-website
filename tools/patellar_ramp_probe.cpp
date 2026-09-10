@@ -6,7 +6,6 @@
 #include <fstream>
 #include <iostream>
 #include <map>
-#include <set>
 #include <string>
 #include <vector>
 
@@ -26,22 +25,64 @@ static bool loadCv5(const std::string & path, Sc::Terrain_::Tiles & out)
     return true;
 }
 
-static void dumpWindow(const MapFile & map, const Sc::Terrain_::Tiles & data, int cx, int cy, int rx=8, int ry=8)
+static std::string baseName(const std::string & path)
+{
+    const auto p = path.find_last_of("/\\");
+    std::string s = p == std::string::npos ? path : path.substr(p+1);
+    for ( char & c : s ) {
+        if ( c == ' ' || c == '.' || c == '-' ) c = '_';
+    }
+    return s;
+}
+
+static void dumpGrid(const MapFile & map, const Sc::Terrain_::Tiles & data, const std::string & stem)
 {
     const int w = int(map.getTileWidth()), h = int(map.getTileHeight());
-    std::cout << "WINDOW centerTile=" << cx << "," << cy << " radius=" << rx << "x" << ry << "\n";
-    for ( int y=std::max(0,cy-ry); y<=std::min(h-1,cy+ry); ++y )
+    std::ofstream csv(stem + "_grid.csv");
+    csv << "x,y,tile,group,index,terrainType,groundHeight,buildability\n";
+    for ( int y=0; y<h; ++y ) for ( int x=0; x<w; ++x )
     {
-        std::cout << "y=" << y << ":";
-        for ( int x=std::max(0,cx-rx); x<=std::min(w-1,cx+rx); ++x )
-        {
-            const u16 tile = map.tiles[size_t(y)*w+x];
-            const size_t g = size_t(Sc::Terrain::getTileGroup(tile));
-            size_t tt = 999, gh = 999;
-            if ( g < data.tileGroups.size() ) { tt = data.tileGroups[g].terrainType; gh = data.tileGroups[g].groundHeight; }
-            std::cout << " " << x << "=" << tile << "/g" << g << "/t" << tt << "/h" << gh;
+        const u16 tile = map.tiles[size_t(y)*w+x];
+        const size_t group = size_t(Sc::Terrain::getTileGroup(tile));
+        const unsigned idx = unsigned(tile & 0x0F);
+        unsigned tt=999, gh=999, b=999;
+        if ( group < data.tileGroups.size() ) {
+            tt = unsigned(data.tileGroups[group].terrainType);
+            gh = unsigned(data.tileGroups[group].groundHeight);
+            b  = unsigned(data.tileGroups[group].buildability);
         }
-        std::cout << "\n";
+        csv << x << ',' << y << ',' << unsigned(tile) << ',' << group << ',' << idx << ',' << tt << ',' << gh << ',' << b << '\n';
+    }
+
+    // Quick categorical PPM: 4x4 pixels per StarCraft tile.
+    // green=normal Jungle low, tan=Raised Jungle, blue=water,
+    // magenta/cyan/yellow=custom ramp-ish group metadata, gray=other.
+    const int S=4;
+    std::ofstream ppm(stem + "_layout.ppm", std::ios::binary);
+    ppm << "P6\n" << w*S << ' ' << h*S << "\n255\n";
+    for ( int y=0; y<h; ++y )
+    {
+        for ( int sy=0; sy<S; ++sy )
+        {
+            for ( int x=0; x<w; ++x )
+            {
+                const u16 tile = map.tiles[size_t(y)*w+x];
+                const size_t group = size_t(Sc::Terrain::getTileGroup(tile));
+                unsigned tt=999, gh=999;
+                if ( group < data.tileGroups.size() ) { tt=unsigned(data.tileGroups[group].terrainType); gh=unsigned(data.tileGroups[group].groundHeight); }
+                unsigned char r=45,g=45,b=45;
+                if ( tile==0 ) { r=8; g=8; b=8; }
+                else if ( tt==5 ) { r=15; g=55; b=125; }
+                else if ( tt==8 ) { r=45; g=115; b=45; }
+                else if ( tt==9 ) { r=155; g=115; b=55; }
+                else if ( group>=1024 && gh==19 ) { r=255; g=40; b=220; }
+                else if ( group>=1024 && (gh==16 || gh==17 || gh==18) ) { r=40; g=235; b=245; }
+                else if ( group>=1024 && gh==1 ) { r=255; g=230; b=30; }
+                else if ( group>=1024 ) { r=220; g=80; b=60; }
+                else if ( gh>=2 ) { r=170; g=125; b=70; }
+                for ( int sx=0; sx<S; ++sx ) { ppm.put(char(r)); ppm.put(char(g)); ppm.put(char(b)); }
+            }
+        }
     }
 }
 
@@ -56,41 +97,26 @@ static void probeMap(const std::string & path, const Sc::Terrain_::Tiles & data)
               << " sprites=" << map.sprites.size()
               << " units=" << map.units.size() << "\n";
 
-    std::map<unsigned,size_t> counts;
-    for ( const auto & d : map.doodads ) counts[unsigned(d.type)]++;
+    std::map<unsigned,size_t> doodads;
+    for ( const auto & d : map.doodads ) doodads[unsigned(d.type)]++;
     std::cout << "DOODAD_TYPE_COUNTS";
-    for ( const auto & kv : counts ) std::cout << " " << kv.first << ":" << kv.second;
+    for ( const auto & kv : doodads ) std::cout << ' ' << kv.first << ':' << kv.second;
     std::cout << "\n";
 
-    for ( size_t i=0; i<map.doodads.size(); ++i )
-    {
-        const auto & d = map.doodads[i];
-        std::cout << "DOODAD i=" << i << " type=" << unsigned(d.type)
-                  << " px=" << d.xc << "," << d.yc
-                  << " tile=" << (d.xc/32) << "," << (d.yc/32)
-                  << " owner=" << unsigned(d.owner)
-                  << " enabled=" << unsigned(d.enabled) << "\n";
-        // SCM Draft calls the hidden raised-Jungle ramp 'Jungle #4'.
-        // Dump a generous window around numeric type 4, plus the first few doodads
-        // so the database layout remains inspectable even if numbering differs.
-        if ( unsigned(d.type)==4 || i<12 )
-            dumpWindow(map,data,int(d.xc/32),int(d.yc/32),7,7);
-    }
-
-    // Summarize tile groups that have mixed/transition ground-height metadata.
     std::map<size_t,size_t> groups;
     for ( u16 tile : map.tiles ) groups[size_t(Sc::Terrain::getTileGroup(tile))]++;
-    std::cout << "RARE_GROUPS";
-    for ( const auto & kv : groups )
-    {
-        if ( kv.second <= 32 && kv.first < data.tileGroups.size() )
-        {
-            const auto & tg = data.tileGroups[kv.first];
-            std::cout << " g" << kv.first << "(n=" << kv.second << ",t=" << unsigned(tg.terrainType)
-                      << ",h=" << unsigned(tg.groundHeight) << ")";
+    size_t customTiles=0, unusualHeight=0;
+    for ( const auto & kv : groups ) if ( kv.first >= 1024 ) customTiles += kv.second;
+    for ( u16 tile : map.tiles ) {
+        const size_t gr=size_t(Sc::Terrain::getTileGroup(tile));
+        if ( gr<data.tileGroups.size() ) {
+            const unsigned gh=unsigned(data.tileGroups[gr].groundHeight);
+            if ( gh!=0 && gh!=2 && gh!=4 ) ++unusualHeight;
         }
     }
-    std::cout << "\n";
+    std::cout << "customGroupTiles=" << customTiles << " unusualGroundHeightTiles=" << unusualHeight << "\n";
+
+    dumpGrid(map,data,baseName(path));
 }
 
 int main(int argc, char ** argv)
