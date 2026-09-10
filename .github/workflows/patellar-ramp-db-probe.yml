@@ -36,24 +36,12 @@ jobs:
         shell: pwsh
         run: |
           Invoke-WebRequest -Uri "https://raw.githubusercontent.com/MaksymAlokhin/StarCraftMapBrowser/master/Tileset/jungle.cv5" -OutFile "$env:RUNNER_TEMP\jungle.cv5"
-
           $headers = @{ 'User-Agent' = 'Mozilla/5.0' }
           $zip = "$env:RUNNER_TEMP\FalkonersTerrain.zip"
-          try {
-            Invoke-WebRequest -Uri "https://staredit.net/sc1db/download/13/" -Headers $headers -MaximumRedirection 10 -OutFile $zip
-            Write-Host "Falkoner ZIP bytes: $((Get-Item $zip).Length)"
-            Expand-Archive -LiteralPath $zip -DestinationPath "$env:RUNNER_TEMP\Falkoner" -Force
-          } catch {
-            Write-Warning "Falkoner download failed: $_"
-          }
-
+          Invoke-WebRequest -Uri "https://staredit.net/sc1db/download/13/" -Headers $headers -MaximumRedirection 10 -OutFile $zip
+          Expand-Archive -LiteralPath $zip -DestinationPath "$env:RUNNER_TEMP\Falkoner" -Force
           $fs = "$env:RUNNER_TEMP\Fighting_Spirit_1.3_MLC.scx"
           Invoke-WebRequest -Uri "https://scmscx.com/api/maps/df7d5e430027644b96109934b5e9233111aa049385187b79fa0bafa11720c34b" -Headers $headers -OutFile $fs
-          Write-Host "Fighting Spirit bytes: $((Get-Item $fs).Length)"
-
-          if (Test-Path "$env:RUNNER_TEMP\Falkoner") {
-            Get-ChildItem "$env:RUNNER_TEMP\Falkoner" -Recurse -File | Where-Object { $_.Name -match 'Jungle.*(Ramp|Doodad).*\.(scx|scm)$' } | Select-Object FullName,Length | Format-Table -AutoSize
-          }
 
       - name: Build probe
         shell: cmd
@@ -65,27 +53,24 @@ jobs:
         shell: pwsh
         run: |
           $exe = "$env:RUNNER_TEMP\IsomTerrain\x64\ReleaseUS\IsomTerrain.exe"
-          $maps = @()
-          if (Test-Path "$env:RUNNER_TEMP\Falkoner") {
-            $targets = Get-ChildItem "$env:RUNNER_TEMP\Falkoner" -Recurse -File | Where-Object {
-              $_.Name -in @('Jungle Doodad Database.scx','Jungle Ramp Database.scx','Jungle Custom Ramps.scx')
-            }
-            $maps += $targets.FullName
-          }
-          $maps += "$env:RUNNER_TEMP\Fighting_Spirit_1.3_MLC.scx"
-          Write-Host "Probe maps:"
-          $maps | ForEach-Object { Write-Host "  $_" }
+          $maps = @(
+            "$env:RUNNER_TEMP\Falkoner\Jungle\Jungle Custom Ramps.scx",
+            "$env:RUNNER_TEMP\Falkoner\Jungle\Jungle Doodad Database.scx",
+            "$env:RUNNER_TEMP\Falkoner\Jungle\Jungle Ramp Database.scx",
+            "$env:RUNNER_TEMP\Fighting_Spirit_1.3_MLC.scx"
+          )
           & $exe "$env:RUNNER_TEMP\jungle.cv5" @maps 2>&1 | Tee-Object -FilePath "ramp-probe.txt"
           if ($LASTEXITCODE -ne 0) { throw "Ramp probe failed with exit code $LASTEXITCODE" }
 
-      - name: Upload probe log and references
+      - name: Upload probe log, grids, and references
         uses: actions/upload-artifact@v4
         with:
-          name: patellar-jungle-ramp-probe
+          name: patellar-jungle-ramp-probe-v2
           path: |
             ramp-probe.txt
+            *_grid.csv
+            *_layout.ppm
             ${{ runner.temp }}/Fighting_Spirit_1.3_MLC.scx
-            ${{ runner.temp }}/Falkoner/Jungle/Jungle Doodad Database.scx
             ${{ runner.temp }}/Falkoner/Jungle/Jungle Ramp Database.scx
             ${{ runner.temp }}/Falkoner/Jungle/Jungle Custom Ramps.scx
-          if-no-files-found: warn
+          if-no-files-found: error
