@@ -372,7 +372,9 @@ int main(int argc, char ** argv)
         return 22;
     }
 
-    std::cout << "maskedTransitionTiles=" << totalCopied << std::endl;\n\n    printCounts("AFTER REOPEN", countTerrain(verify.tiles,jungleData));
+    std::cout << "maskedTransitionTiles=" << totalCopied << std::endl;
+
+    printCounts("AFTER REOPEN", countTerrain(verify.tiles,jungleData));
     std::cout << "Verified blended ramp patches=" << patches.size()
               << " starts=" << starts << " units=" << verify.numUnits() << std::endl;
     return 0;
