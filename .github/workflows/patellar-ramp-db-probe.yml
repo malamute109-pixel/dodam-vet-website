@@ -15,61 +15,51 @@ jobs:
     timeout-minutes: 12
     steps:
       - uses: actions/checkout@v4
-
       - name: Clone IsomTerrain
         shell: pwsh
-        run: |
-          git clone --depth 1 https://github.com/TheNitesWhoSay/IsomTerrain.git "$env:RUNNER_TEMP\IsomTerrain"
-
+        run: git clone --depth 1 https://github.com/TheNitesWhoSay/IsomTerrain.git "$env:RUNNER_TEMP\IsomTerrain"
       - name: Install probe and VS2022 settings
         shell: pwsh
         run: |
           Copy-Item "tools\patellar_ramp_probe.cpp" "$env:RUNNER_TEMP\IsomTerrain\IsomTerrain\Main.cpp" -Force
           Get-ChildItem "$env:RUNNER_TEMP\IsomTerrain" -Filter *.vcxproj -Recurse | ForEach-Object {
             $xml = Get-Content $_.FullName -Raw
-            $xml = $xml.Replace('v142','v143')
-            $xml = $xml.Replace('<EnableASAN>true</EnableASAN>','<EnableASAN>false</EnableASAN>')
+            $xml = $xml.Replace('v142','v143').Replace('<EnableASAN>true</EnableASAN>','<EnableASAN>false</EnableASAN>')
             Set-Content $_.FullName $xml
           }
-
-      - name: Download Jungle CV5 and ramp references
+      - name: Download Jungle tileset and ramp references
         shell: pwsh
         run: |
-          Invoke-WebRequest -Uri "https://raw.githubusercontent.com/MaksymAlokhin/StarCraftMapBrowser/master/Tileset/jungle.cv5" -OutFile "$env:RUNNER_TEMP\jungle.cv5"
-          $headers = @{ 'User-Agent' = 'Mozilla/5.0' }
-          $zip = "$env:RUNNER_TEMP\FalkonersTerrain.zip"
+          $base="https://raw.githubusercontent.com/MaksymAlokhin/StarCraftMapBrowser/master/Tileset"
+          foreach($ext in @('cv5','vx4','vr4','wpe')) { Invoke-WebRequest -Uri "$base/jungle.$ext" -OutFile "$env:RUNNER_TEMP\jungle.$ext" }
+          $headers=@{'User-Agent'='Mozilla/5.0'}
+          $zip="$env:RUNNER_TEMP\FalkonersTerrain.zip"
           Invoke-WebRequest -Uri "https://staredit.net/sc1db/download/13/" -Headers $headers -MaximumRedirection 10 -OutFile $zip
           Expand-Archive -LiteralPath $zip -DestinationPath "$env:RUNNER_TEMP\Falkoner" -Force
-          $fs = "$env:RUNNER_TEMP\Fighting_Spirit_1.3_MLC.scx"
-          Invoke-WebRequest -Uri "https://scmscx.com/api/maps/df7d5e430027644b96109934b5e9233111aa049385187b79fa0bafa11720c34b" -Headers $headers -OutFile $fs
-
+          Invoke-WebRequest -Uri "https://scmscx.com/api/maps/df7d5e430027644b96109934b5e9233111aa049385187b79fa0bafa11720c34b" -Headers $headers -OutFile "$env:RUNNER_TEMP\Fighting_Spirit_1.3_MLC.scx"
       - name: Build probe
         shell: cmd
         run: |
           call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvars64.bat"
           msbuild "%RUNNER_TEMP%\IsomTerrain\IsomTerrain.sln" /m /p:Configuration=ReleaseUS /p:Platform=x64 /p:WindowsTargetPlatformVersion=10.0
-
-      - name: Probe reference terrain
+      - name: Render reference terrain
         shell: pwsh
         run: |
-          $exe = "$env:RUNNER_TEMP\IsomTerrain\x64\ReleaseUS\IsomTerrain.exe"
-          $maps = @(
+          $exe="$env:RUNNER_TEMP\IsomTerrain\x64\ReleaseUS\IsomTerrain.exe"
+          $maps=@(
             "$env:RUNNER_TEMP\Falkoner\Jungle\Jungle Custom Ramps.scx",
-            "$env:RUNNER_TEMP\Falkoner\Jungle\Jungle Doodad Database.scx",
             "$env:RUNNER_TEMP\Falkoner\Jungle\Jungle Ramp Database.scx",
             "$env:RUNNER_TEMP\Fighting_Spirit_1.3_MLC.scx"
           )
-          & $exe "$env:RUNNER_TEMP\jungle.cv5" @maps 2>&1 | Tee-Object -FilePath "ramp-probe.txt"
-          if ($LASTEXITCODE -ne 0) { throw "Ramp probe failed with exit code $LASTEXITCODE" }
-
-      - name: Upload probe log, patches, and references
+          & $exe "$env:RUNNER_TEMP\jungle.cv5" "$env:RUNNER_TEMP\jungle.vx4" "$env:RUNNER_TEMP\jungle.vr4" "$env:RUNNER_TEMP\jungle.wpe" @maps 2>&1 | Tee-Object -FilePath ramp-probe.txt
+          if($LASTEXITCODE -ne 0){ throw "probe failed $LASTEXITCODE" }
+      - name: Upload exact renders and references
         uses: actions/upload-artifact@v4
         with:
-          name: patellar-jungle-ramp-probe-v3
+          name: patellar-jungle-ramp-exact-renders
           path: |
             ramp-probe.txt
-            *.csv
-            ${{ runner.temp }}/Fighting_Spirit_1.3_MLC.scx
+            *_exact.ppm
             ${{ runner.temp }}/Falkoner/Jungle/Jungle Ramp Database.scx
             ${{ runner.temp }}/Falkoner/Jungle/Jungle Custom Ramps.scx
           if-no-files-found: error
