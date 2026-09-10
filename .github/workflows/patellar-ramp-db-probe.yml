@@ -62,14 +62,13 @@ jobs:
           & $exe "$env:RUNNER_TEMP\jungle.cv5" @maps 2>&1 | Tee-Object -FilePath "ramp-probe.txt"
           if ($LASTEXITCODE -ne 0) { throw "Ramp probe failed with exit code $LASTEXITCODE" }
 
-      - name: Upload probe log, grids, and references
+      - name: Upload probe log, patches, and references
         uses: actions/upload-artifact@v4
         with:
-          name: patellar-jungle-ramp-probe-v2
+          name: patellar-jungle-ramp-probe-v3
           path: |
             ramp-probe.txt
-            *_grid.csv
-            *_layout.ppm
+            *.csv
             ${{ runner.temp }}/Fighting_Spirit_1.3_MLC.scx
             ${{ runner.temp }}/Falkoner/Jungle/Jungle Ramp Database.scx
             ${{ runner.temp }}/Falkoner/Jungle/Jungle Custom Ramps.scx
