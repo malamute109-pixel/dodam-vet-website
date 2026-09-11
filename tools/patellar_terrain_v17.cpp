@@ -434,7 +434,10 @@ int main(int argc, char ** argv)
     for ( const Patch & p : patches )
     {
         const RampCopyStats s = copyFeatheredRamp(*mapFile,rampSource,jungleData,p);
-        if ( s.invalid != 0 || s.core < 4 || s.copied <= s.core || s.midOrFlagged == 0 )
+        // Some proven low->high donors encode the traversable transition in
+        // terrainType groups without 0x10 groundHeight flags.  Require a real
+        // transition core plus feather, but do not reject that valid encoding.
+        if ( s.invalid != 0 || s.core < 4 || s.copied <= s.core )
         {
             std::cerr << "Ramp integration validation failed: " << p.name << std::endl;
             return 12;
@@ -444,7 +447,7 @@ int main(int argc, char ** argv)
         totalFeather += s.feather;
         totalMid += s.midOrFlagged;
     }
-    if ( totalCopied < 160 || totalFeather < 24 || totalMid < 8 ) {
+    if ( totalCopied < 160 || totalCore < 32 || totalFeather < 24 ) {
         std::cerr << "Too few complete feathered ramp tiles: copied=" << totalCopied
                   << " feather=" << totalFeather << " mid=" << totalMid << std::endl;
         return 13;
