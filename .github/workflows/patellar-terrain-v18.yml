@@ -1,0 +1,82 @@
+name: Patellar Terrain v1.8 Fighting Spirit Ramp Playtest
+
+on:
+  push:
+    branches:
+      - chatgpt-patellar-isom-build
+    paths:
+      - 'tools/patellar_terrain_v18.cpp'
+      - '.github/workflows/patellar-terrain-v18.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: patellar-terrain-v18
+  cancel-in-progress: true
+
+jobs:
+  build-map:
+    runs-on: windows-2022
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Clone IsomTerrain
+        shell: pwsh
+        run: |
+          git clone --depth 1 https://github.com/TheNitesWhoSay/IsomTerrain.git "$env:RUNNER_TEMP\IsomTerrain"
+
+      - name: Install v1.8 generator and CI save fix
+        shell: pwsh
+        run: |
+          Copy-Item "tools\patellar_terrain_v18.cpp" "$env:RUNNER_TEMP\IsomTerrain\IsomTerrain\Main.cpp" -Force
+
+          $mapFileCpp = "$env:RUNNER_TEMP\IsomTerrain\MappingCoreLib\MapFile.cpp"
+          $src = Get-Content $mapFileCpp -Raw
+          $needle = "bool MapFile::processModifiedAssets(bool updateListFile)`r`n{"
+          if (!$src.Contains($needle)) { $needle = "bool MapFile::processModifiedAssets(bool updateListFile)`n{" }
+          if (!$src.Contains($needle)) { throw "Could not locate processModifiedAssets" }
+          $replacement = $needle + "`r`n    if ( modifiedAssets.empty() )`r`n        return true;"
+          $src = $src.Replace($needle, $replacement)
+          Set-Content $mapFileCpp $src
+
+          Get-ChildItem "$env:RUNNER_TEMP\IsomTerrain" -Filter *.vcxproj -Recurse | ForEach-Object {
+            $xml = Get-Content $_.FullName -Raw
+            $xml = $xml.Replace('v142','v143')
+            $xml = $xml.Replace('<EnableASAN>true</EnableASAN>','<EnableASAN>false</EnableASAN>')
+            Set-Content $_.FullName $xml
+          }
+
+      - name: Download Jungle data and Fighting Spirit ramp donor
+        shell: pwsh
+        run: |
+          Invoke-WebRequest -Uri "https://raw.githubusercontent.com/MaksymAlokhin/StarCraftMapBrowser/master/Tileset/jungle.cv5" -OutFile "$env:RUNNER_TEMP\jungle.cv5"
+          $headers=@{'User-Agent'='Mozilla/5.0'}
+          $donor="$env:RUNNER_TEMP\Fighting_Spirit_1.3_MLC.scx"
+          Invoke-WebRequest -Uri "https://scmscx.com/api/maps/df7d5e430027644b96109934b5e9233111aa049385187b79fa0bafa11720c34b" -Headers $headers -OutFile $donor
+          if (!(Test-Path $donor)) { throw "Fighting Spirit donor not found: $donor" }
+
+      - name: Build generator
+        shell: cmd
+        run: |
+          call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvars64.bat"
+          msbuild "%RUNNER_TEMP%\IsomTerrain\IsomTerrain.sln" /m /p:Configuration=ReleaseUS /p:Platform=x64 /p:WindowsTargetPlatformVersion=10.0
+
+      - name: Generate and validate v1.8
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path "build-output" | Out-Null
+          $exe = "$env:RUNNER_TEMP\IsomTerrain\x64\ReleaseUS\IsomTerrain.exe"
+          $donor="$env:RUNNER_TEMP\Fighting_Spirit_1.3_MLC.scx"
+          $output = "build-output\Patellar_Luxation_v18_FS_Ramp_Playtest.scx"
+          & $exe "$env:RUNNER_TEMP\jungle.cv5" $donor $output 2>&1 | Tee-Object -FilePath build-output\v18-build-log.txt
+          if ($LASTEXITCODE -ne 0) { throw "Generator failed with exit code $LASTEXITCODE" }
+          Get-Item $output | Format-List Name,Length,FullName
+
+      - name: Upload v1.8 Fighting Spirit ramp playtest
+        uses: actions/upload-artifact@v4
+        with:
+          name: Patellar-Luxation-v18-FS-Ramp-Playtest
+          path: |
+            build-output/Patellar_Luxation_v18_FS_Ramp_Playtest.scx
+            build-output/v18-build-log.txt
+          if-no-files-found: error
